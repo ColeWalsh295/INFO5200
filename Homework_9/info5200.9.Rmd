@@ -1,0 +1,217 @@
+---
+title: "College Pathway Analytics"
+author: '[[Cole Walsh, 4399966]]'
+subtitle: 'INFO 5200 Learning Analytics: Week 12 Homework'
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+In this homework, you will learn how to analyze enrollment record data to identify patterns that can inform policy decisions about an academic curriculum or what information to provide to students as they plan their courses. You are given a synthetic dataset with an authentic correlation structure for students who have graduated in one of three majors (major 1, 2, and 3).
+
+**Learning Objectives**
+
+1. Understand the structure of course enrollment data
+2. Identify toxic course pairings
+3. Identify course-major relationships to give students feedback about path-dependencies
+
+**Scenario** 
+
+You are approached by a vice provost for undergraduate studies to inform upcoming policies about curriculum changes. You are asked to provide guidance on two high-level questions: 
+
+(1) Which courses should we advise students not to take in the same semester? 
+
+(2) What can we tell students about how their first-year course choices influence their likely major?
+
+**Data**
+
+The synthetic dataset contains one record per student course enrollment. 
+
+|Variable|Data Type|Definition|
+|--------------|-------------|----------------------------------------------|
+|student_id|numeric|Unique student identifier|
+|major_id|numeric|Unique major identifier|
+|course_id|numeric|Unique course identifier|
+|term|numeric|Semester number in temporal order; e.g. 1=Fall 2017, 2=Sping 2018, 3=Fall 2018, etc.|
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+load("info5200.9.rda")
+library(data.table)
+```
+
+**Exploring the Data**
+
+Before starting to answer any questions, take some time to understand the structure of the dataset. The block below will not be evaluated in the knitted report (eval=F). You can use this space to try out different approaches to explore the data and test your understanding of it.
+
+```{r eval=F}
+head(a)
+table(a$major_id, a$term)
+length(unique(a$course_id))
+hist(a$grade)
+```
+
+# Part 1. Which courses should we advise students not to take in the same semester? 
+
+The goal is to identify course pairings that should be avoided because students have earned lower grades when taking them together compared to taking them some time apart.
+
+**Question 1:** Which pairs of courses show lower grades when students take them together than when they take them apart? (Tip: follow the instructions below; or try it your own way; the combn() function will be useful regardless; it is not a bad idea to use for-loops to solve this.)
+
+```{r}
+#######################################
+####### BEGIN INPUT: Question 1 #######
+#######################################
+
+# First, narrow the set of observations to courses that are frequently chosen (say at least 20 times) and terms where a student took more than just one course.
+
+a[, 1:4] <- a[, 1:4] %>%
+  lapply(., as.factor) %>%
+  data.frame(.)
+
+# Drop duplicate courses
+a.noDuplicates <- a[!duplicated(a[, c('student_id', 'term', 'course_id')]),]
+
+# To data.table for future computations
+a.dt <- as.data.table(a.noDuplicates)
+
+a.dt.frequent <- a.dt[, Course.Frequency := .N, 
+                      by = course_id][Course.Frequency >= 20, N.Courses := .N, 
+                                      by = .(student_id, 
+                                             term)][N.Courses > 1,
+                                                    !c('Course.Frequency','N.Courses')]
+  
+
+# Second, given this smaller dataset, identify all actual course pairings in the dataset (i.e. which pairs of courses did students ever thake together)? You can use for loops to do this and the `combn(x, m=2)` function returns all possible pairings for a vector `x`.
+
+# Get all pairs and re-order with lowest course number first
+a.pairs <- a.dt.frequent[, as.data.table(t(combn(course_id, 2))), 
+                         by = .(student_id, 
+                                term)][, `:=`(Course1 = as.character(pmin(as.numeric(V1),
+                                                                          as.numeric(V2))),
+                                              Course2 = as.character(pmax(as.numeric(V1),
+                                                                          as.numeric(V2)))),
+                                       ][, -c('V1', 'V2'),]
+
+# Get grades of courses using joins
+a.pairs.grade1 <- right_join(a.dt.frequent, a.pairs, by = c('student_id', 'term', 
+                                                            'course_id' = 'Course1')) %>%
+  select(student_id, term, course_id, grade, Course2) %>%
+  `colnames<-`(c('student_id', 'term', 'Course1', 'Grade1', 'Course2'))
+
+a.pairs.grades <- right_join(a.dt.frequent, a.pairs, by = c('student_id', 'term', 
+                                                            'course_id' = 'Course2')) %>%
+  select(student_id, term, course_id, grade, Course1) %>%
+  `colnames<-`(c('student_id', 'term', 'Course2', 'Grade2', 'Course1')) %>%
+  left_join(a.pairs.grade1, ., by = c('student_id', 'term', 'Course1', 'Course2'))
+
+# Third, compute the average grade for the courses the student received when taking each pair of courses. Again, use a for loop.
+
+# Average grades of pairs
+a.pairs.grades$Avg.Grade <- rowMeans(a.pairs.grades[, c('Grade1', 'Grade2')])
+
+# Fourth, aggregate by course pairs and compute the average paired grade and frequency of occurance. This is easy with group_by() and summarise(). Ignore cases where students took the same course twice in the term. Identify course pairings that have come up at least 20 times.
+
+a.pairs.grades.dt = as.data.table(a.pairs.grades)
+
+Course.Pairs.Grades <- a.pairs.grades.dt[, .(Avg.Paired.Grade = mean(Avg.Grade), N.Pairs = .N),
+                                         by = .(Course1, Course2)][N.Pairs >= 20]
+
+
+# Fifth, going back to the full dataset, find students who took the same common course pairs identified in the last step but did not take them in the same term. Compute the unpaired average grade for each of the two courses.
+
+for(pair in 1:nrow(Course.Pairs.Grades)){
+  
+  Course.1 <-  Course.Pairs.Grades[pair, Course1]
+  Course.2 <- Course.Pairs.Grades[pair, Course2]
+  
+  Course1.dt <- a.dt[course_id == Course.1] %>%
+    select(student_id, term, course_id, grade)
+  
+  Courses.dt <- a.dt[course_id == Course.2] %>%
+    select(student_id, term, course_id, grade) %>%
+    left_join(Course1.dt, ., by = ('student_id')) %>%
+    filter(term.x != term.y) 
+  
+  Courses.dt$Avg.grade <- rowMeans(Courses.dt[, c('grade.x', 'grade.y')])
+  
+  if(pair > 1){
+    Unpaired.df <- Unpaired.df %>%
+      add_row(Course1 = Course.1, Course2 = Course.2, Avg.Unpaired.Grade = mean(Courses.dt$Avg.grade))
+  } else {
+    Unpaired.df <- data.frame(Course1 = Course.1, Course2 = Course.2, 
+                              Avg.Unpaired.Grade = mean(Courses.dt$Avg.grade))
+  }
+}
+
+# Sixth, compare the paired and unpaired average grade for each common course pair. Write down which FOUR pairs of courses students should avoid taking in the same term?
+
+Course.Pairs.Grades %>%
+  left_join(., Unpaired.df, by = c('Course1', 'Course2')) %>%
+  mutate(Diff = Avg.Paired.Grade - Avg.Unpaired.Grade) %>%
+  arrange(Diff)
+
+# Write down the pairs here: 
+
+# 946, 947
+# 8, 934
+# 185, 934
+# 186, 949
+
+#######################################
+#######################################
+```
+
+# Part 2: How students' first-year course choices influence their likely major
+
+**Question 2:** For the courses that students commonly take in their first term, how does the choice of which ones they enroll in influence their likelihood of majoring in a field?
+
+```{r}
+#######################################
+####### BEGIN INPUT: Question 2 #######
+#######################################
+    
+# First, identify the most commonly taken courses in the student's first term for all students (note this is relative to the student, not simply term=1). Define 'commonly taken' as over 20 first-term enrollments.
+
+a.dt <- as.data.table(a.noDuplicates)
+a.FirstTerm <- a.dt[, First.term := min(as.numeric(term)), 
+                    by = .(student_id)][term == First.term, Course.Frequency := .N, 
+                                        by = .(course_id)][Course.Frequency >= 20]
+
+a.FirstTerm %>%
+  group_by(course_id) %>%
+  summarize(n())
+
+# Second, compute the likelihood that a student majors in each of the three majors conditional on enrolling in the first term in each one of the classes identified above. Thus, you are computing 3 x num.classes probabilities.
+
+a.FirstTerm[, .(Frac_Major1 = mean(major_id == 1), Frac_Major2 = mean(major_id == 2), 
+                Frac_Major3 = mean(major_id == 3)), by = .(course_id)]
+
+# Third, make a visualization that shows the likelihood of majoring in each major (1,2,3) after taking each of the identified courses in the first term. Try to make a bar plot with stacked bars for each course and color fill shows the major distribution.
+
+ggplot(a.FirstTerm, aes(x = course_id, fill = major_id)) +
+  geom_bar(position = 'fill') +
+  coord_flip() +
+  labs(x = 'Course taken in first term', y = 'Fraction of Declared majors')
+
+
+# Fourth, complete the blanks:
+# - Students who take course 669 are most likely to major in 3.  
+# - Students who take course 425 are most likely to major in 1.
+# - Students who take course 421 have about equl probability of majoring in 1 and 3.
+
+#######################################
+#######################################
+```
+
+# Self-reflection
+
+**Briefly summarize your experience on this homework. What was easy, what was hard, what did you learn?**
+
+- I took this opportunity to try to learn more about using data.table. This was frustrating at times, but in the end I only needed to use one 'for' loop so I think this was a worthwhile experience.
+
+# Submit Homework
+
+This is the end of the homework. Please **Knit a PDF report** that shows both the R code and R output and upload it on the EdX platform. Alternatively, you can Knit it as a "doc", open it in Word, and save that as a PDF.
+
+**Important:** Be sure that all your code is visible. If the line is too long, it gets cut off. If that happens, organize your code on several lines.

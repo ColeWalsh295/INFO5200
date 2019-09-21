@@ -1,0 +1,309 @@
+---
+title: "Self-regulated Learning"
+author: '[[Cole Walsh, 4399966]]'
+subtitle: 'INFO 5200 Learning Analytics: Week 9 Homework'
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+set.seed(123)
+library(tidyverse)
+
+# ## Behind the scene processing of SRL data ##
+
+# # Read in data and recode responses to numeric
+# srl = fread("../datasets/INFO5200: SRL questionnaire.csv")
+# colnames(srl)[2] = "survey_id"
+# .respscale = c("Not at all true for me", "Sometimes true for me", "Quite true for me", "True for me", "Very true for me")
+# srl[,4:27] = srl[,4:27] %>% mutate_all(function(x){as.numeric(factor(x, levels = .respscale)) - 1})
+
+# # Impute some missing data
+# library(mice)
+# srl = complete(mice(data.frame(srl[,c(2,4:27)])))
+
+# # Create index for each strategy and export
+# srl$goal_setting = rowMeans(srl[,2:5])
+# srl$strategic_planning = rowMeans(srl[,6:9])
+# srl$selfevaluation = rowMeans(srl[,10:12])
+# srl$task_strategies = rowMeans(srl[,13:18])
+# srl$elaboration = rowMeans(srl[,19:21])
+# srl$help_seeking = rowMeans(srl[,22:24])
+# fwrite(srl %>% select(survey_id, goal_setting:help_seeking), 
+#       file = "info5200_srl_clean.csv")
+```
+
+In this homework, you will learn how to mine a clickstream dataset for correlational patterns. You are given the SRL survey responses and the most recent export of the edx clickstream log for this course.
+
+The SRL responses are recoded to range from 0 (low) to 4 (high) for each strategy index.
+
+Learning Objectives:
+
+1. Exploring response distributions of survey data
+2. Merging survey with behavioral data
+3. Engineering features that could represent SRL strategies
+4. Checking if any behavioral features predict survey responses using a linear model
+
+# Part 1: Explore responses and merge data
+
+**Question 1:** Plot a boxplot for the responses for each SRL strategy in the dataset (6 in total).
+
+```{r}
+# Import cleaned up SRL data
+srl = read.csv("info5200.6.srl.csv")
+
+##################################################
+####### BEGIN INPUT: Plot the distribution #######
+##################################################
+
+library(reshape2)
+
+srl_melted <- melt(srl, id.vars = c('survey_id'))
+ggplot(srl_melted, aes(x = variable, y = value)) +
+  geom_boxplot() +
+  xlab('SRL Strategy')
+
+###############################################
+###############################################
+```
+
+**Question 2:** Now merge the clickstream data with the SRL survey data using the `survey_id` identifier. Note that not everyone in the clickstream data has survey records. You only need to keep students who have survey data. Thus, you should end up with all clickstream records for students who filled out the survey: 29 students and 65,407 rows total.
+
+```{r}
+# Import edx clickstream log
+cl = readRDS("info5200.6.clickstream.rds")
+
+############################################### 
+####### BEGIN INPUT: Merge Datasets    ########
+###############################################
+
+df <- left_join(srl, cl, by = 'survey_id')
+length(unique(df$survey_id))
+nrow(df)
+
+###############################################
+###############################################
+```
+
+
+# Part 2: Engineering Features
+
+Once again you get to practice feature engineering. By now you know what the clickstream data looks like thanks to the prediction project. Unlike in the project, however, you do not need to worry this time about the timing. Your goal is to come up with behavioral indicators of self-regulated learning. You know what the survey responses measure (check out the actual questions) and you know what the clickstream records represent (check out the corresponding pages in the course).
+
+**Question 3:** Before coding up variables, describe in words ONE OR MORE (sequences/patterns of) actions that you think might be indicative of EACH SRL strategy. It will be easier for some than for others. At the end, you can describe some additional "general" activity features.
+
+```{r}
+############################################### 
+####### BEGIN INPUT: Plan features ############
+###############################################
+
+# goal setting
+# 1. Total number of sessions
+# 2. Average time per session
+
+# strategic planning
+# 1. Number of times displaying side bar
+# 2. Number of times visiting syllabus
+
+# self-evaluation
+# 1. Number of of times a previous module is navigated to
+# 2. Number of times checking grades
+
+# task strategies
+# 1. Median time between sessions
+# 2. Number of times a user checks the next unit in a sequnce
+
+# elaboration
+# 1. Number of times a user jumps between units
+# 2. Number of times returning to main course page
+
+# help seeking
+# 1. Total number of clicks
+# 2. Number of times visiting discussion forums
+
+# general features
+# 1. Problems submitted
+# 2. Average number of clicks per session
+
+###############################################
+###############################################
+```
+
+**Question 4:** For each student, engineer the features you described above using the clickstream data. Combine all features into a dataset that has 1 row per student (29 rows here) with all features you created and the SRL data.
+
+```{r}
+##################################################
+####### BEGIN INPUT: Feature engineering #########
+##################################################
+
+# goal setting features
+
+# Define new session as being at least 1h after previous click
+
+df.TimeStamp <- df %>%
+  group_by(survey_id) %>%
+  arrange(timestamp) %>%
+  mutate(Time.diff = replace_na(timestamp -lag(timestamp), 3601)) %>%
+  group_by(survey_id) %>%
+  mutate(New.Session = Time.diff > 3600,
+         Session.Number = cumsum(New.Session))
+
+gs = df.TimeStamp %>%
+  group_by(survey_id) %>%
+  summarize(Num.Sessions = max(Session.Number)) %>%
+  left_join(., df.TimeStamp %>%
+              group_by(survey_id, Session.Number) %>%
+              summarize(Session.Length = max(timestamp) - min(timestamp)) %>%
+              group_by(survey_id) %>%
+              summarize(Avg.Session.Length = mean(Session.Length)), by = 'survey_id')
+
+# strategic planning features
+
+sp = df %>%
+  group_by(survey_id) %>%
+  summarize(Side.Bar.Displays = sum(event_type == 
+                                      paste('edx.bi.course.upgrade.sidebarupsell.',
+                                            'displayed', sep = ''), na.rm = TRUE),
+            Syllabus.visits = sum(referer == 
+                                    paste('https://edge.edx.org/courses/course-v1:',
+'CornellX+INFO5200+2019_Spring/courseware/2d815b2e787344838a1509c7a5861d2d/',
+'6fffcdccb3b84a8cbc79c173cbbe20e8/1?activate_block_id=block-v1%3ACornellX%2BINFO5200%',
+'2B2019_Spring%2Btype%40vertical%2Bblock%404337136773ca4198aa081242fcbf56d2', sep = ''), 
+na.rm = TRUE))
+
+# self-evaluation features
+
+se = df %>%
+  group_by(survey_id) %>%
+  summarize(Prev.Unit = sum(event_type == 'seq_prev', na.rm = TRUE),
+            Num.Check.Grades = sum(referer ==
+                                     paste('https://edge.edx.org/courses/course-v1:',
+'CornellX+INFO5200+2019_Spring/progress', sep = ''), na.rm = TRUE))
+                                     
+
+# task strategies features
+
+ts = df.TimeStamp %>%
+  filter(New.Session == TRUE) %>%
+  group_by(survey_id) %>%
+  summarize(Med.Time.Btw.Sessions = median(Time.diff)) %>%
+  left_join(., df %>%
+              group_by(survey_id) %>%
+              summarize(Next.Unit = sum(event_type == 'seq_next', na.rm = TRUE)), 
+            by = 'survey_id')
+
+# elaboration features
+
+el = df %>%
+  group_by(survey_id) %>%
+  summarize(Jump.Unit = sum(event_type == 'seq_goto', na.rm = TRUE),
+            Main.Page.Visits = sum(referer ==
+                                     paste('https://edge.edx.org/courses/course-v1:',
+'CornellX+INFO5200+2019_Spring/course/', sep = ''), na.rm = TRUE))
+
+# help seeking features
+
+hs = df %>%
+  group_by(survey_id) %>%
+  summarize(N.Clicks = n(),
+            Forum.Visits = sum(referer ==
+                                 paste('https://edge.edx.org/courses/course-v1:',
+'CornellX+INFO5200+2019_Spring/discussion/forum/', sep = ''), na.rm = TRUE))
+
+# general features
+
+ge = df %>%
+  group_by(survey_id) %>%
+  summarize(Num.Problems.Sub = sum(event_type == 'edx.grades.problem.submitted', 
+                                   na.rm = TRUE)) %>%
+  left_join(., df.TimeStamp %>%
+              group_by(survey_id, Session.Number) %>%
+              summarize(N.Clicks = n()) %>%
+              group_by(survey_id) %>%
+              summarize(N.Clicks.Session = mean(N.Clicks)), by = 'survey_id')
+
+# combine into one dataset
+
+# When I left joined the cl and srl datasets, I 
+# renamed it df, thus I have changed cl to df here
+
+dat = df %>% 
+    select(survey_id, goal_setting:help_seeking) %>%
+    unique %>%
+    left_join(gs) %>%
+    left_join(sp) %>%
+    left_join(se) %>%
+    left_join(ts) %>%
+    left_join(el) %>%
+    left_join(hs) %>%
+    left_join(ge)
+
+###############################################
+###############################################
+```
+
+# Part 3: Explore SRL Association
+
+There are many options for how to check if the behavioral features are associated with SRL strategies. We will use a very simple method: linear regression predicting each SRL index (self-report) with the relevant behavioral features. (Feel free to try out more complex ideas.)
+
+**Question 5:** For each SRL index (goal_setting, strategic_planning, etc.) as the outcome, fit TWO linear regression models (`lm()`): one that only has the relevant features you describe above, and another that has all of the features.
+
+For example, if you created two features specifically to indicate help seeking (H1 and H2), then you fit one model `help_seeking ~ H1 + H2` and a second model `help_seeking ~ H1 + H2 + all_other_features`. For each one, you should output the `summary()` of the `lm()` object. **Do not use the survey_id and the other SRL measures as predictors in the model!** So if you predict help_seeking then do not have goal_setting etc. in the model.
+
+```{r}
+####################################################
+####### BEGIN INPUT: Fit Regression Models #########
+####################################################
+
+# goal setting
+summary(lm(goal_setting ~ Num.Sessions + Avg.Session.Length, dat))
+summary(lm(goal_setting ~ . - survey_id - strategic_planning - selfevaluation - task_strategies 
+           - elaboration - help_seeking, dat))
+
+# strategic planning
+summary(lm(strategic_planning ~ Side.Bar.Displays + Syllabus.visits, dat))
+summary(lm(strategic_planning ~ . - survey_id - goal_setting - selfevaluation - task_strategies 
+           - elaboration - help_seeking, dat))
+
+# self-evaluation
+summary(lm(selfevaluation ~ Prev.Unit + Num.Check.Grades, dat))
+summary(lm(selfevaluation ~ . - survey_id - goal_setting - strategic_planning - task_strategies 
+           - elaboration - help_seeking, dat))
+
+# task strategies
+summary(lm(task_strategies ~ Med.Time.Btw.Sessions + Next.Unit, dat))
+summary(lm(task_strategies ~ . - survey_id - goal_setting - strategic_planning - selfevaluation 
+           - elaboration - help_seeking, dat))
+
+# elaboration
+summary(lm(elaboration ~ Jump.Unit + Main.Page.Visits, dat))
+summary(lm(elaboration ~ . - survey_id - goal_setting - strategic_planning - selfevaluation 
+           - task_strategies - help_seeking, dat))
+
+# help seeking
+summary(lm(help_seeking ~ N.Clicks + Forum.Visits, dat))
+summary(lm(help_seeking ~ . - survey_id - goal_setting - strategic_planning - selfevaluation 
+           - task_strategies - elaboration, dat))
+
+
+###############################################
+###############################################
+```
+
+**Question 6:** Describe what you found. Which SRL strategies, if any, were you able to predict with which features? Were there any surprises? Which self-reported SRL strategy were you able to predict best with all features (look at the `Multiple R-squared`)?
+
+Using a nominal significance level of alpha = 0.05, none of the tests failed to reject the null hypothesis that there was no relationship between the variables. With the full model, there were some significant relationships between variables and goal setting and help-seeking, though I didn't check for any colinearity among the variables or anything. I was a little surprised that none of my variables appeared important, though with a sample size of 29 I guess this wasn't too surprising. I was best able to predict goal setting with an R^2 of aboout 0.78.
+
+# Self-reflection (ungraded)
+
+**Briefly summarize your experience on this homework. What was easy, what was hard, what did you learn?**
+
+I felt like this was the longest homework I've worked on (~4-5 hours). The most difficult part was coming up with good features. The implementation and modeling was straightforward.
+
+# Submit Homework
+
+This is the end of the homework. Please **Knit a PDF report** that shows both the R code and R output and upload it on the EdX platform. Alternatively, you can Knit it as a "doc", open it in Word, and save that as a PDF.
+
+**Important:** Be sure that all your code is visible. If the line is too long, it gets cut off. If that happens, organize your code on several lines.

@@ -1,0 +1,12 @@
+```{r}
+library(ggplot2)
+df <- read.csv('grit_experiment.csv')
+head(df)
+summary(df)
+hist(df$score)
+ggplot(df, aes(x = Cohort.Name, y = score)) +
+  geom_boxplot()
+t.test(score ~ Cohort.Name, df)
+wilcox.test(score ~ Cohort.Name, df)
+```
+

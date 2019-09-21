@@ -1,0 +1,256 @@
+---
+title: "Emotional Learning Analytics"
+author: '[[Cole Walsh, 4399966]]'
+subtitle: 'INFO 5200 Learning Analytics: Week 13 Homework'
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+In this homework, you will learn how to build a basic sensor-free affect detector. You are given ASSISTments data enhanced with coded affect data. The goal is for you to engineer features and predict affect as best as you can.
+
+**Learning Objectives**
+
+1. Engineer features that can detect affect in a dataset
+2. Train a Random Forest model to identify boredom
+3. Make recommendations to teachers based on the features that are important.
+
+**Data**
+
+The dataset contains information for 250 students at several schools with many teachers. The students were using the Assistments platform for learning mathematics and the granularity of the data is at the student-problem level (like the data in the first homework). Some more information on this data before I pre-processed it is available here: https://sites.google.com/site/assistmentsdata/home/2012-13-school-data-with-affect
+
+|Variable|Data Type|Definition|
+|--------------|-------------|----------------------------------------------|
+|user_id, teacher_id, school_id, problem_id, skill_id|numeric|Unique identifiers|
+|frustrated, confused, concentrating, bored|numeric|Indicator of coded affective state (1=present)|
+|correct|numeric|Correct on first attempt|
+|ms_first_response|numeric|Milliseconds until first response submitted|
+|hint_count|numeric|Number of hints student asked for|
+|attempt_count|numeric|Number of attempts until correct|
+|user_event_index|numeric|For each user, a running index of events (first=1, second=2 ... last)|
+|time_spent|numeric|Seconds spent on problem overall|
+
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(randomForest)
+a = readRDS("info5200.10.rds")
+library(data.table)
+```
+
+**Exploring the Data**
+
+Before starting to answer any questions, take some time to understand the structure of the dataset. The block below will not be evaluated in the knitted report (eval=F). You can use this space to try out different approaches to explore the data and test your understanding of it.
+
+```{r eval=F}
+head(a)
+summary(a)
+n_distinct(a$skill_id)
+hist(table(a$user_id))
+```
+
+# Part 1. Feature Engineering
+
+Come up with features that are likely to predict boredom. Think of a time when you were learning something that you felt bored. What were you doing? How might this show up in this dataset. You should check out this paper which engineers features for a very similar dataset. The dataset you are working with is less detailed though; otherwise this would take too long to train: https://learning-analytics.info/journals/index.php/JLA/article/view/3536/4014
+ 
+You will try out fitting random forest models using the `randomForest()` function. Note that the full dataset is quite large (the original one online is even bigger!), so you will want to experiment with a smaller, representative subset at the beginning. So Question 1 asks you to pair it down for now.
+
+**Question 1:** Inspect the correlations between the `bored` variable (the outcome you want to predict) and the other learning logs in the dataset. Then begin creating your own features for predicting boredom. I give you an example below. Please add at least 7 new features; note that the authors of the paper linked above created over 170 features!
+
+Instructor example: I would think that students who answer a question fast and move on are not bored (yet); students who take a long time to figure out what the answer may be and don't submit are probably bored. Students in the middle of the distribution maybe a mix of the two. I first check this idea using a plot and then code a feature to capture the relationship.
+
+```{r}
+# Inspecting the correlation
+base_vars = c("bored","correct","ms_first_response","hint_count","attempt_count",
+              "user_event_index","time_spent")
+cor(a[,base_vars])
+
+### INSTRUCTOR EXAMPLE ###
+a %>%
+    group_by(user_id) %>%
+    mutate(
+        # Diff in response time to the typical response time
+        diff = ms_first_response - median(ms_first_response)
+    ) %>%
+    group_by(
+        # Group difference into 5 buckets
+        bucket = cut(diff, c(-Inf,-10000, -1000, -100, 100, 1000, 10000, Inf))
+    ) %>%
+    summarise(
+        # get the average prevalence of boredom in each bucket
+        boredom = mean(bored)
+    ) %>%
+    ggplot(aes(x=bucket, y=boredom)) + geom_point() # plot it
+
+a = a %>% 
+    group_by(user_id) %>% # median will be relative to student
+    mutate(
+        rel_resp_time = ms_first_response - median(ms_first_response),
+        slow_response = as.integer(rel_resp_time < -1000),
+        fast_response = as.integer(rel_resp_time > 10000)
+    ) %>% 
+    ungroup
+
+# Checking correlations
+cor(a[,c("bored","rel_resp_time","slow_response","fast_response")])
+
+#######################################
+####### BEGIN INPUT: Question 2 #######
+#######################################
+
+# Add your own exploration and feature engineering here (make at least 7 new features)
+a.dt <- as.data.table(a)
+
+# Data is time ordered within user, features ---> the number of consecutive questions answered
+# correctly on the first attempt, if help was asked for on the first problem, if help was asked
+# for on the last problem, number of last 5 first responses that were wrong, number of last 5
+# questions where hints were used, total number of hints used up to that point, total time of 
+# last 5 problems, and total attempts of last 5 problems
+a.dt[, Consecutive.Correct := cumsum(correct), 
+     by = .(user_id, rleid(correct))][,
+                                      `:=`(First.Problem.Help = head(hint_count, 1) > 0,
+                                           Last.Problem.Help = tail(hint_count, 1) > 0,
+                                           Cumulative.Hints = cumsum(hint_count),
+                                           Wrong.Previous.5 = Reduce(`+`, shift(1 - correct, 0:4)),
+                                           Hints.Previous.5 = Reduce(`+`, 
+                                                                     shift(1 * (hint_count > 0),
+                                                                           0:4)),
+                                           Total.Time.Previous.5 = Reduce(`+`, 
+                                                                          shift(time_spent, 0:4)),
+                                           Total.Attempts.Previous.5 = Reduce(`+`,
+                                                                              shift(attempt_count,
+                                                                                    0:4))),
+                                      .(user_id)]
+
+# Fill NAs with 0's
+a.dt[is.na(a.dt)] <- 0
+
+cor(a.dt[, c('bored', 'Consecutive.Correct', 'First.Problem.Help', 'Last.Problem.Help', 
+             'Cumulative.Hints', 'Wrong.Previous.5', 'Hints.Previous.5', 'Total.Time.Previous.5',
+             'Total.Attempts.Previous.5')])
+
+#######################################
+#######################################
+```
+
+**Question 2:** Sample 100 users for a training dataset and 50 users for the test dataset (you should keep all of the rows for each user). Call the smaller datasets `train` and `test`.
+
+```{r}
+#######################################
+####### BEGIN INPUT: Question 2 #######
+#######################################
+
+set.seed(11)
+
+users = sample(unique(a.dt$user_id), 150)
+
+train = as.data.frame(a.dt[a.dt$user_id %in% users[1:100]])
+test = as.data.frame(a.dt[a.dt$user_id %in% users[101:length(users)]])
+
+#######################################
+#######################################
+```
+
+**Question 3:** Fit a random forest model with your features using the `randomForest(xtrain, ytrain, xtest, ytest)` function. See how the random forest model let's you specify the training and test data (x are the predictors, y is the outcome, here boredom). Make sure to convert boredom to a `factor` so that the function understands that you want to run a classification (not regression). Be sure not to use any predictors that would not generalize (e.g. student id) or be unavailable (e.g. other affective states). You may want to fit at the beginning with just `ntree=100` to try out the performance quickly. Also remember that you can tweak the `mtry` parameter for how many variables to include in each tree.
+
+**Important: check your confusion matrix in the output of the randomForest model; if your model is just always predicting not-bored then it is clearly not a good enough model and you need to come up with better features. If so, go back to question 1 and adjust accordingly.**
+
+```{r}
+#######################################
+####### BEGIN INPUT: Question 3 #######
+#######################################
+
+# Make a list of your features here to keep track of them
+features = c("correct", "ms_first_response", "hint_count", 
+             "attempt_count", "time_spent",
+             "rel_resp_time", "slow_response", "fast_response", "Consecutive.Correct",
+             "First.Problem.Help", "Last.Problem.Help", "Cumulative.Hints", "Wrong.Previous.5",
+             "Hints.Previous.5", "Total.Time.Previous.5", "Total.Attempts.Previous.5")
+
+m.rf = randomForest(train[, features], as.factor(train$bored), test[, features],
+                    as.factor(test$bored), importance = TRUE)
+
+m.rf
+
+table(m.rf$predicted, true=train$bored)
+#######################################
+#######################################
+```
+
+**Question 4:** Check on variable importance in the model that you developed. You can do this by fitting the randomForest above with the `importance = TRUE` parameter (if you didn't do so already). Then take the model object `m.rf` and run `importance(m.rf)` on it. Check out the help for what the different measures of importance mean. Write down the 3 best predicting variables and write why you think it is a good predictor of boredom:
+
+```{r}
+#######################################
+####### BEGIN INPUT: Question 4 #######
+#######################################
+
+# Compute variable importance
+
+Imp = importance(m.rf)
+Rows = rownames(Imp)
+
+Imp %>%
+  data.frame(.) %>%
+  mutate(Variable = Rows) %>% 
+  arrange(desc(MeanDecreaseGini))
+
+# Write down your 3 most important variables and why you think they are good predictors
+
+# The total time that a student spent on the last 5 problems was most important in predicting
+# boredom. Conceivably, longer times spent on most recent problems is indicative of persisting or
+# oncoming boredom.
+
+# The first response time relative to the median first response time was also important for a likely
+# similar reason. When a student takes longer to click on a problem than usual this is indicative of
+# boredom.
+
+# Additionally, the time spent on a problem indicates that a student is likely to get bored if they
+# spend a lot of time on a problem.
+
+# Time features are apparently important...
+
+#######################################
+#######################################
+```
+
+Here I show you how to do it with the ROCR package. The ideal curve would be close to the top-left corner and have an AUC (area under the curve) value that is close to 1. An AUC value of 0.5 mean your model is not doing anything. If you see that, you should go back and improve your feature engineering and model parameters.
+
+**Question 4:** Plot the ROC curve for the model you trained above.
+
+```{r}
+# install.packages("ROCR")
+library(ROCR)
+
+#######################################
+####### BEGIN INPUT: Question 4 #######
+#######################################
+
+# Create the prediction object for ROCR
+predictions = m.rf$votes[,2]
+pred = prediction(predictions, train$bored)
+
+# Calculate the AUC value
+perf_AUC = performance(pred, measure = "auc")
+AUC = perf_AUC@y.values[[1]]
+
+# Plot the ROC curve
+perf_ROC = performance(pred, "tpr", "fpr") 
+plot(perf_ROC, main="ROC plot")
+text(0.5, 0.5, paste("AUC = ", format(AUC, digits=3, scientific=F)))
+
+#######################################
+#######################################
+```
+
+# Self-reflection
+
+**Briefly summarize your experience on this homework. What was easy, what was hard, what did you learn?**
+
+Interesting homework. Feature engineering felt easier than earlier times partly because of the paper which provided some great ideas for useful features. Using data.table also helped. In the paper, they used 173 features and found an AUC of 0.632, so with only 10-20 features its not surprising that my AUC was 0.528; this is a difficult thing to model and we can do only slightly better than chance.
+
+# Submit Homework
+
+This is the end of the homework. Please **Knit a PDF report** that shows both the R code and R output and upload it on the EdX platform. Alternatively, you can Knit it as a "doc", open it in Word, and save that as a PDF.
+
+**Important:** Be sure that all your code is visible. If the line is too long, it gets cut off. If that happens, organize your code on several lines.

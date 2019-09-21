@@ -1,0 +1,149 @@
+---
+title: "Predictive Models in Education"
+author: 'Cole Walsh, 4399966'
+subtitle: 'INFO 5200 Learning Analytics: Week 5 Homework'
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+```
+
+In this homework, you will first contribute to generating some assessment data that will be used by everyone in the class. Then, you will download the assessment data, score it, and analyze its psychometric properties. It helps to have carefully read *HLA Ch.3, Measurement and its uses in learning analytics*.
+
+# Step 1: Take the Assessment
+
+The goal here is to generate some realistic data. You will see 12 questions to answer in 6 minutes (please time yourself). Do not use the internet or other help. Just try your best; you will of course not be graded based on your score on this [6-minute assessment](https://goo.gl/forms/Gt1acazQf908KAZk1).
+
+# Step 2: Download and Import Data
+
+You can open the available assessment responses [following this link](https://docs.google.com/spreadsheets/d/1tkbfew8e24sE8HxEuLS1tNFmcMboEm-4AHmSwqtZJi4/edit?usp=sharing).
+
+Two things to note:
+
+1. The responses are shown as text. To use psychometric methods you need to convert this to 0/1 data i.e. score the responses.
+2. The first answer row has a score of 12/12. This means that those text responses are all correct. You can use this fact for scoring.
+
+Download the responses as a CSV: File > Download as > Comma-separated values.
+
+**Import the CSV file into R/Rstudio using the `read.csv()` function.**
+
+```{r}
+# load the csv here
+dat = read.csv('INFO5200_HW4_Responses.csv')
+```
+
+# Step 3: Score Assessment Data
+
+The goal is to create a new dataset that is 12 columns wide and N columns long (N = num. responses) with a value of 1 for correct answers, 0 for incorrect answers. Complete the following steps:
+
+- First, make sure that the data you imported looks correct e.g. using `head()`. 
+- Second, remove *Timestamp*, *Score*, and *Enter.your.Cornell.NetID* columns from the dataset. You don't need them anymore.
+- Third, save the first row (the one with the 12/12 score) as the answer key into a new variable *corres*. 
+- Fourth, remove the row from the dataset, it's not real data.
+- Fifth, to score the responses, create a dataset that repeats the correct answers (*corres*) as many times as there are responses; then compare the real responses to the new matrix of correct responses. This isn't the best way and I provide you some code below. Feel free to use another way to get to the solution. Be sure to convert the TRUE/FALSE responses into 1/0, e.g. using *1 \* (response_data == corres_mat)* where == does the scoring and 1*(...) takes care of the conversion to binary.
+
+```{r}
+# first
+head(dat)
+
+# second
+dat2 <- dat[, -c(1, 2, 15)]
+
+# third
+corres <- dat2[1, ]
+
+# fourth
+response_data <- dat2[2:nrow(dat2), ]
+
+# fifth
+corres_mat = corres[rep(1, nrow(response_data)),] # dat is the response dataset
+response_data <- 1 * (response_data == corres_mat)
+
+# Quick fix: cut long column names for prettier output:
+colnames(response_data) = substr(colnames(response_data), 0, 12)
+head(response_data)
+```
+
+# Step 4: Basic Psychometrics
+
+Resource: [Wikipedia on Cronbach's alpha](https://en.wikipedia.org/wiki/Cronbach%27s_alpha)
+
+The goal here is to get an overview of the assessment and item characteristics.
+
+**1. Compute the total score for each person (i.e. row) and plot the distribution in a histogram.**
+```{r}
+hist(rowSums(response_data))
+```
+
+**2. Compute how difficult the items were in terms of the proportion of respondents who got them wrong. Which was the hardest/easiest item?**
+```{r}
+colMeans(response_data)
+```
+**The easiest items were questions 7, 8, and 11 where 24 out of 26 people got the question correct. The hardest item was the first question where only 8 people out of 26 got the question correct.**
+
+**3. Assess the reliability of the assessment using Cronbach's alpha and how the reliability would change if an item were dropped from the assessment.** Use the *alpha()* function from the *psych* package to compute these. **Based on the output, what is the (raw) alpha coefficient and is there an item that could be dropped to increase the reliability of the assessment?**
+
+```{r warning=FALSE, message=FALSE}
+# install.packages("psych")
+library(psych)
+alpha(response_data)
+```
+**The raw alpha coefficient is 0.32 (95% confidence interval stretched 0.37 in either direction). Dropping either question 5 or 11 would result in an increase in alpha of 0.05, so either of these questions could be dropped, but the reliability of the asssessment is still very low.**
+
+
+**4. Conduct an exploratory factor analysis (EFA) of the assessment responses.** First, you need to find the optimal number of factors. To do this, use the *fa.parallel()* function from the *psych* package, passing just the dataset as the input. The resulting Scree Plot and the function output below will help you choose the number of factors. Next, you run a factor analysis model using the *fa()* function specifying the *nfactors =* parameter with the optimal number of factors. You then take the result of running *fa()* and plot a diagram of the result using the *fa.diagram()* function which just takes the output of *fa()* as its input. Describe your observation in 1-2 sentences.
+
+```{r}
+fa.parallel(response_data)
+mod <- fa(response_data, nfactors = 3)
+fa.diagram(mod)
+```
+**There is an elbow in the scree plot at nfactors = 3, hence I chose to use 3 factors here. There appears to be a large factor made up of 7 items and a smaller one made of 3 items. One item loaded onto its own factor and one item did not load onto any factors, which I'm not sure I understand.**
+
+# Step 5: Fit an IRT Model
+
+Resources 
+
+- [R-blogger article on IRT](https://www.r-bloggers.com/item-response-theory-developing-your-intuition/)
+- [Overview of IRT methods by Columbia School of Public Health](https://www.mailman.columbia.edu/research/population-health-methods/item-response-theory)
+
+**Now you will fit a latent trait model using the IRT approach to estimate the item difficulty (how hard it is) and item discrimination (how well it discriminates between low/high ability students).** To do this, install and load the *ltm* package. Then, use the *ltm()* function to fit the model. This function takes a formula as input that specifies how many latent traits to estimate. You just want to estimate one here. The syntax for this formula is *yourDataSet ~ z1* where z1 stands for the first latent trait, which is the student ability. Check the resulting output for Item Difficulty (Dffclt) and Discrimination (Dscrmn). Good items have moderate difficulty and high discrimination. When the difficulty is very high/low, it means everyone/no one gets it right--that's bad. If the discrimination is low, it means that the item is ineffective at distinguishing high from low ability students (they answer it correctly at similar rates). Which items are good/bad?
+
+```{r message=FALSE, warning=FALSE}
+# install.packages("ltm")
+library(ltm)
+
+irt.out = ltm(response_data ~ z1)
+irt.out
+```
+**Question 11 is a little easy, but it is very highly discriminating making it a good question. Question 1 is a more difficult, but has the next largest discrimination, which is relatively moderate, so it is also a good question. The only other 'good' question looks to be question 2 since it is slighly difficult and has a little discrimination. All of the other questions suffere from low or negative discrimination (where higher ability students are pedicted to do worse). Question 3, 8 and 10 are particularly bad with large negative discriminations. Questions 4, 5, 6, and 12 also have negative discriminations. These are all bad questions.**
+
+**Finally, plot the Item Characteristic Curves by passing the output from *irt.out = ltm(...)* into the *plot(irt.out)* function.** The x-axis is student ability; the y-axis is probability of answering correctly (i.e. "facility" = 1 - difficulty).
+
+```{r}
+plot(irt.out)
+```
+
+**Optional:** If you'd like to explore different IRT models and datasets a bit more to build your intuition, check out this interactive application. Simply uncomment the three lines of code below---but keep them commented out for the submission (i.e. keep eval=F). 
+
+```{r eval=F}
+#install.packages("IRTShiny")
+library(IRTShiny)
+startIRT()
+```
+
+# Self-reflection
+
+**Briefly summarize your experience on this homework. What was easy, what was hard, what did you learn?**
+
+**I really enjoyed this homework. I thought the homework was easy, but I've had plenty of experience with R in research and some experience with assessment development, so I don't object to the difficulty of the homework. This was useful to me because I got to think more about IRT, which is something I haven't used so far in my research, but now that I have a better handle on it, I plan on doing just that.**
+
+# Submit Homework
+
+This is the end of the homework. Please **Knit a PDF report** that shows both the R code and R output and upload it on the EdX platform. Alternatively, you can Knit it as a "doc", open it in Word, and save that as a PDF.
+
+**Important:** Be sure that all your code is visible. If the line is too long, it gets cut off. If that happens, organize your code on several lines.

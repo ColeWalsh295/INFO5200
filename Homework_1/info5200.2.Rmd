@@ -1,0 +1,231 @@
+---
+title: "Exploring Educational Datasets"
+author: 'Cole Walsh, 4399966'
+subtitle: 'INFO 5200 Learning Analytics: Week 2 Homework'
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+## Introducing the Data Context
+
+For this homework, you will be analyzing two public datasets obtained from [PSLC DataShop](http://pslcdatashop.org). 
+
+- The first dataset provides question-level data of students practicing math problems in academic year 2004-2005 using the [Assisstments platform](https://www.assistments.org/). On this platform, students can attempt a problem many times to get it right and they can ask for more and more hints on a problem until the final hint tells them what the answer is.
+
+- The second dataset derives from an educational game for improving math sense. The online game site is not live anymore but here is a [video of the game](https://www.youtube.com/watch?v=DWfRSnlZvlQ). Watch it to better understand the variables in the dataset. A special feature of this dataset is that it records data for a randomized experiment with two conditions to test a research hypothesis about how to teach kids "that fractions represent magnitudes of the same basic type as whole numbers."
+
+## Loading Datasets
+
+Before you can load data, you need to figure out the format that it is saved in. The file extension typically corresponds to the format, but this is not always the case. R has functions to load all common data files, most of these functions start with `read`, e.g. `read.csv()` for CSVs or `read.tsv()` for tab-separated values. The **foreign** package adds functions to import many additional data file types. For large data files, consider using the `fread` function in the **data.table** package: it's fast and reliable.
+
+The `readRDS()` and `saveRDS()` functions allow you to important and export any object in R. This can be a scala, vector, matrix, data.frame, function, or any other object. Moreover, saving a dataset as an RDS file is much more efficient (smaller file size) than saving it as a CSV.
+
+- Load the Assistments dataset (*info5200.2.assisstments.rds*) into R and call it `asm`.
+- Load the fraction game dataset (*info5200.2.gamedata.csv*) into R and call it `fr`.
+
+```{r}
+# add code here to load files
+asm <- readRDS('info5200.2.assisstments.rds')
+fr <- read.csv('info5200.2.gamedata.csv')
+```
+
+## Exploring the Assisstments Dataset
+
+It is hard to overstate the importance of understanding the data you are working with. You want to understand the data-generating process, how exactly the data came about. But first, you need to understand what is in the dataset. Look at the first few lines using `head()`.
+
+```{r}
+head(asm)
+```
+
+Based on the first few lines of data, and what we know about the dataset, we can infer the following:
+
+- *studentID* is an identifier for students
+- *itemid* is an identifier for math questions
+- *correctonfirstattempt* is an indicator of whether a student answered correctly on the first attempt
+- *attempts* is the number of answer attempts required
+- *hints* the number of hints a student requested
+- *seconds* time spent on the question in seconds
+- the remaining columns provide start and end times and dates for each question
+
+It also shows us that the dataset is in **long format** (1 row = 1 event) instead of wide format (1 row = 1 individual). However, as you can see from the *attempts* variable, you do not have data on each attempt, but a question-level rollup. The data is at the student-question level, which means that there is one row for each question a student attempted that summarizes interaction with the question (performance indicators and time spent).
+
+Now answer the following questions with this dataset.
+
+Q1: How many unique individuals are in there?
+```{r}
+length(unique(asm$studentID)) 
+```
+**There are 912 unique indivduals in the dataset.**
+
+Q2: How many unique questions are there?
+```{r}
+length(unique(asm$itemid))
+```
+**There are 1709 unique questions in the dataset.**
+
+Q3: What is the rate of getting it right on the first attempt?
+```{r}
+mean(asm$correctonfirstattempt)
+```
+**Individuals get it right on the first attempt approximately 40.5% of the time.**
+
+Q4: What is the rate of asking for hints?
+```{r}
+mean(asm$hints)
+```
+**Individuals ask for ~0.756 hints per question on average.**
+
+Q5: How long do students spend on a question on average?
+```{r}
+mean(asm$seconds)
+```
+**Individuals spend approximately 48.7 seconds on each question, on average.**
+
+Q6: Plot the distribution of attempts as a histogram:
+```{r}
+hist(asm$attempts, main = 'Histogram of number of attempts', xlab = 'Number of attempts')
+```
+
+Q7: Plot the distribution of hints as a histogram:
+```{r}
+hist(asm$hints, main = 'Histogram of number of hints', xlab = 'Number of hints')
+```
+
+Q8: What are the three pair-wise correlations between seconds, attempts, and hints?
+```{r}
+cor(asm[, c('seconds', 'attempts', 'hints')])
+```
+**The pearson correlation coefficients are: ~0.435 between seconds and attempts, ~0.171 between seconds and hints, and ~ 0.128 between attempts and hints.**
+
+Q9: Plot the distributions of time spent comparing questions that students got right on the first attempts and those where it took more attempts using a boxplot:
+```{r}
+library(ggplot2)
+
+ggplot(asm, aes(x = factor(correctonfirstattempt), y = seconds)) +
+  geom_boxplot() +
+  xlab('Correct on first attempt?') +
+  scale_x_discrete(labels = c('No', 'Yes'))
+```
+
+Q10: Tabulate the frequency distribution of hints using `table()`:
+```{r}
+table(asm$hints)
+```
+
+Q11: Tabulate the frequency distribution of hints against getting it right on the first attempt (note in the output that 6+2+2 handful of students asked for hints before making an attempt and then got it right on their first attempt):
+```{r}
+table(asm$hints, asm$correctonfirstattempt)
+```
+
+Q12: Plot the distribution of how many questions students attempted:
+```{r}
+library(dplyr)
+
+asm %>%
+  group_by(studentID) %>%
+  summarize(NumQuestions = n()) %>%
+  ggplot(., aes(x = NumQuestions)) +
+  geom_histogram() +
+  xlab('Number of Questions attempted') +
+  ylab('Number of Students')
+```
+
+Q13: Plot the student-level distribution (i.e. 1 value per student) of answering correctly on the first attempt (hint: you first need to compute the proportion of questions that each student got right on first attempt; there are several ways to do this, e.g. using `sapply()`, or loading the `tidyverse` package and using `group_by` and `summarise`, or using syntax from the `data.table` package which is the fastest option; do NOT use a *for* loop unless you really cannot solve it otherwise):
+```{r}
+asm %>%
+  group_by(studentID) %>%
+  summarize(PropCorrectFirstAttempt = mean(correctonfirstattempt)) %>%
+  ggplot(., aes(x = PropCorrectFirstAttempt)) +
+  geom_histogram() +
+  xlab('Proportion of questions answered correctly on first attempt') +
+  ylab('Number of Students')
+```
+
+Q14: Plot the student-level relationship between getting questions correct (as in Q13; x-axis) and the average number of hints (y-axis) using a scatter plot. Try adding a straight line to fit the data.
+```{r}
+asm %>%
+  group_by(studentID) %>%
+  summarize(PropCorrectFirstAttempt = mean(correctonfirstattempt),
+            AverageNumHints = mean(hints)) %>%
+  ggplot(., aes(x = PropCorrectFirstAttempt, y = AverageNumHints)) +
+  geom_point() +
+  geom_smooth(method = 'lm') +
+  xlab('Proportion of questions correct on first attempt') +
+  ylab('Average number of hints used per question')
+```
+
+Q15: Are students who attempt more questions (i.e. get more practice) more likely to answer correctly on the first attempt? Provide a correlation and scatterplot.
+```{r}
+asm2 <- asm %>%
+  group_by(studentID) %>%
+  summarize(NumQuestions = n(),
+            PropCorrectFirstAttempt = mean(correctonfirstattempt))
+
+cor(asm2$NumQuestions, asm2$PropCorrectFirstAttempt)
+ggplot(asm2, aes(x = NumQuestions, y = PropCorrectFirstAttempt)) +
+  geom_point() +
+  xlab('Number of Questions attempted') +
+  ylab('Proportion of Questions correct on first attempt')
+```
+**The Pearson correlation coefficient between the number of questions attempted and the proportion of questions answered correctly on the first attempt is ~0.101. Answering more questions does not appear to be a strong predictor of how likely a student is to answer correctly on the first attempt.**
+
+Q16: How difficult are the questions? Plot the question-level distribution of the proportion of students who get it right on the first attempt as a histogram. This quantitiy is called "item difficulty" (Tip: use the same approach as in Q13)
+```{r}
+asm %>%
+  group_by(itemid) %>%
+  summarize(PropCorrectFirstAttempt = mean(correctonfirstattempt)) %>%
+  ggplot(., aes(x = PropCorrectFirstAttempt)) +
+  geom_histogram() +
+  xlab('Proportion of students who answer question correctly on first attempt') +
+  ylab('Number of Questions')
+```
+
+Q17: Repeat Q16 but exclude questions that were attempted fewer than 10 times (note in the plot that this reduces the spikes at 0 and 1).
+```{r}
+asm %>%
+  group_by(itemid) %>%
+  filter(n() > 9) %>%
+  summarize(PropCorrectFirstAttempt = mean(correctonfirstattempt)) %>%
+  ggplot(., aes(x = PropCorrectFirstAttempt)) +
+  geom_histogram() +
+  xlab('Proportion of students who answer question correctly on first attempt') +
+  ylab('Number of Questions')
+```
+
+## Exploring the Fractions Game Dataset
+
+Print the first few lines of the fractions dataset:
+```{r}
+head(fr)
+```
+
+There are more columns in this dataset and it requires watching the game video closely to understand what the variables could mean. On your own, go though each column as I did above and reason about what the variable could mean. It is not obvious that the column identifying users is *firstName*. Below are just a few questions.
+
+Q18: Remove rows from the dataset where the *firstName* column is empty. How many unique students are there?
+```{r}
+length(unique(fr[!is.na('firstName'), c('firstName')]))
+```
+**There are 118 unique students in the dataset.**
+
+Q19: How does the game judge between a Miss, Near Miss, Partial Hit, and Perfect Hit? Make a boxplot of current accuracy against the hit type to investigate. 
+```{r}
+ggplot(fr, aes(x = hitType, y = currentAccuracy)) +
+  geom_boxplot() +
+  xlab('Hit Type') +
+  ylab('Current Accuracy')
+```
+**A 'Time Out!' corresponds to an accuracy of 0, while a 'Miss!' looks to be anything with accuracy less than about 90. Slightly above this threshold corresponds to a 'Near Miss!'. Higher still corresponds to a 'Partial Hit!'. At close to (but not necessarily exactly) 100% accuracy, this is a 'Perfect Hit!'**
+
+Q20: Find the variable that best predicts the current accuracy out of the following: *Trials.per.user, currentLevelNo, curReactionTime, itemsPlayed, currentStarCount*?
+```{r}
+cor(fr[, c('currentAccuracy', 'Trials.per.user', 'currentLevelNo', 'curReactionTime',
+           'itemsPlayed', 'currentStarCount')], use = "pairwise.complete.obs")[2:6,
+                                                                               c('currentAccuracy')]
+```
+**Out of these variables 'currentStarCount' is most highly correlated with current accuracy and will better predict this variable than the other four variables.**
+
+# Submit Homework
+
+This is the end of the homework. Please **Knit a PDF report** that shows both the R code and R output and upload it on the EdX platform.
